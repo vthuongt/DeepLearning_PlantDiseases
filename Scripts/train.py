@@ -1,5 +1,7 @@
 import time
-import os
+import os, re
+
+import ipdb
 
 import numpy as np
 import torch
@@ -12,17 +14,22 @@ import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
 import torchvision.transforms as transforms
 from torchvision import datasets
+from torchsummary import summary
 
-from itertools import accumulate
+from itertools import accumulate, product
 from functools import reduce
 
 #configuration
 model_urls = {
     'alexnet': 'https://download.pytorch.org/models/alexnet-owt-4df8aa71.pth',
-    'densenet121': 'https://download.pytorch.org/models/densenet121-241335ed.pth',
-    'densenet169': 'https://download.pytorch.org/models/densenet169-6f0f7f60.pth',
-    'densenet201': 'https://download.pytorch.org/models/densenet201-4c113574.pth',
-    'densenet161': 'https://download.pytorch.org/models/densenet161-17b70270.pth',
+    'densenet121': 'https://download.pytorch.org/models/densenet121-a639ec97.pth',
+    'densenet169': 'https://download.pytorch.org/models/densenet169-b2777c0a.pth',
+    'densenet201': 'https://download.pytorch.org/models/densenet201-c1103571.pth',
+    'densenet161': 'https://download.pytorch.org/models/densenet161-8d451a50.pth',
+    #'densenet121': 'https://download.pytorch.org/models/densenet121-241335ed.pth',
+    #'densenet169': 'https://download.pytorch.org/models/densenet169-6f0f7f60.pth',
+    #'densenet201': 'https://download.pytorch.org/models/densenet201-4c113574.pth',
+    #'densenet161': 'https://download.pytorch.org/models/densenet161-17b70270.pth',
     #truncated _google to match module name
     'inception_v3': 'https://download.pytorch.org/models/inception_v3_google-1a9a5a14.pth',
     'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
@@ -49,9 +56,12 @@ input_sizes = {
     'vgg' : (224,224)
 }
 
-models_to_test = ['alexnet', 'densenet169', 'inception_v3', \
-                  'resnet34', 'squeezenet1_1', 'vgg13']
+#models_to_test = ['alexnet', 'densenet169', 'inception_v3', \
+#                  'resnet34', 'squeezenet1_1', 'vgg13']
 
+models_to_test = ['vgg13', 'densenet121','inception_v3', \
+                  'resnet34', 'squeezenet1_1', 'vgg13']
+                  
 batch_size = 20
 use_gpu = torch.cuda.is_available()
 
@@ -60,14 +70,17 @@ use_gpu = torch.cuda.is_available()
 #We solve the dimensionality mismatch between
 #final layers in the constructed vs pretrained
 #modules at the data level.
+# yileds layers in common but with different sizes => classifier weight + bias
 def diff_states(dict_canonical, dict_subset):
     names1, names2 = (list(dict_canonical.keys()), list(dict_subset.keys()))
-    
+
     #Sanity check that param names overlap
     #Note that params are not necessarily in the same order
     #for every pretrained model
     not_in_1 = [n for n in names1 if n not in names2]
     not_in_2 = [n for n in names2 if n not in names1]
+
+
     assert len(not_in_1) == 0
     assert len(not_in_2) == 0
 
@@ -78,28 +91,167 @@ def diff_states(dict_canonical, dict_subset):
             yield (name, v1)                
 
 def load_defined_model(name, num_classes):
-    
+
     model = models.__dict__[name](num_classes=num_classes)
-    
+    print(name)
+    print(num_classes)
+
     #Densenets don't (yet) pass on num_classes, hack it in for 169
     if name == 'densenet169':
-        model = torchvision.models.DenseNet(num_init_features=64, growth_rate=32, \
-                                            block_config=(6, 12, 32, 32), num_classes=num_classes)
-        
+        model = models.DenseNet(num_init_features=64, growth_rate=32, \
+                                block_config=(6, 12, 32, 32),
+                                num_classes=num_classes)
+
+    elif name == 'densenet121':
+        model = models.DenseNet(num_init_features=64, growth_rate=32, \
+                                block_config=(6, 12, 24, 16),
+                                num_classes=num_classes)
+
+    elif name == 'densenet201':
+        model = models.DenseNet(num_init_features=64, growth_rate=32, \
+                                block_config=(6, 12, 48, 32),
+                                num_classes=num_classes)
+
+    elif name == 'densenet161':
+        model = models.DenseNet(num_init_features=96, growth_rate=48, \
+                                block_config=(6, 12, 36, 24),
+                                num_classes=num_classes)
+    elif name.startswith('densenet'):
+        raise ValueError(
+            "Cirumventing missing num_classes kwargs not implemented for %s" % name)
+
+    # summary(model,(3,224,224))
+
     pretrained_state = model_zoo.load_url(model_urls[name])
 
+    if name.startswith('densenet'):
+        pattern = re.compile(
+            r'^(.*denselayer\d+\.(?:norm|relu|conv))\.((?:[12])\.(?:weight|bias|running_mean|running_var))$')
+        for key in list(pretrained_state.keys()):
+            res = pattern.match(key)
+            if res:
+                new_key = res.group(1) + res.group(2)
+                pretrained_state[new_key] = pretrained_state[key]
+                del pretrained_state[key]
+
+
+    # remove num_batches_tracked layers
+    new_state =  {key: value for key, value in model.state_dict().items() if not key.endswith('num_batches_tracked')}
+    #model.load_state_dict(new_state)
+
     #Diff
+    #diff = [s for s in diff_states(model.state_dict(), pretrained_state)]
+    diff = [s for s in diff_states(new_state, pretrained_state)]
+
+    print("Replacing the following state from initialized", name, ":", \
+          [d[0] for d in diff])
+    #  ['classifier.6.weight', 'classifier.6.bias'] in alexnet
+
+    for name, value in diff:
+        pretrained_state[name] = value
+
+    #assert len([s for s in diff_states(model.state_dict(), pretrained_state)]) == 0
+    assert len([s for s in diff_states(new_state, pretrained_state)]) == 0
+
+    # ipdb.set_trace()
+
+    #Merge
+    model.load_state_dict(pretrained_state)
+    return model, diff
+
+
+# when loading:
+# clean up non pretrained model
+# and
+
+def load_defined_model2(name, num_classes):
+    print(torch.__version__)
+    print(torchvision.__version__)
+
+    model = models.__dict__[name](num_classes=num_classes)
+    print(name)
+    print(num_classes)
+
+    #Densenets don't (yet) pass on num_classes, hack it in for 169
+    # Densenets don't (yet) pass on num_classes, hack it in for 169
+    if name == 'densenet169':
+        model = models.DenseNet(num_init_features=64, growth_rate=32, \
+                                block_config=(6, 12, 32, 32),
+                                num_classes=num_classes)
+
+    elif name == 'densenet121':
+        model = models.DenseNet(num_init_features=64, growth_rate=32, \
+                                block_config=(6, 12, 24, 16),
+                                num_classes=num_classes)
+
+    elif name == 'densenet201':
+        model = models.DenseNet(num_init_features=64, growth_rate=32, \
+                                block_config=(6, 12, 48, 32),
+                                num_classes=num_classes)
+
+    elif name == 'densenet161':
+        model = models.DenseNet(num_init_features=96, growth_rate=48, \
+                                block_config=(6, 12, 36, 24),
+                                num_classes=num_classes)
+    elif name.startswith('densenet'):
+        raise ValueError(
+            "Cirumventing missing num_classes kwargs not implemented for %s" % name)
+    summary(model,(3,224,224))
+
+
+    pretrained_state = model_zoo.load_url(model_urls[name])
+    if name.startswith('densenet'):
+        pattern = re.compile(
+            r'^(.*denselayer\d+\.(?:norm|relu|conv))\.((?:[12])\.(?:weight|bias|running_mean|running_var))$')
+        for key in list(pretrained_state.keys()):
+            res = pattern.match(key)
+            if res:
+                new_key = res.group(1) + res.group(2)
+                pretrained_state[new_key] = pretrained_state[key]
+                del pretrained_state[key]
+
+    model_dict = model.state_dict()
+    pretrained_dict = pretrained_state
+
+
+    # 1. filter out unnecessary keys
+    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+
+    print(pretrained_state.keys())
+    # 2. overwrite entries in the existing state dict
+    model_dict.update(pretrained_dict)
+
+    # Diff
+    diff = [s for s in diff_states(model_dict, pretrained_state)]
+    print("Replacing the following state from initialized", name, ":", \
+          [d[0] for d in diff])
+
+    #for name, value in diff:
+    #    pretrained_state[name] = value
+
+    #assert len([s for s in diff_states(model.state_dict(), pretrained_state)]) == 0
+    #temp = [s for s in diff_states(model.state_dict(), pretrained_state)]
+
+
+    ipdb.set_trace()
+    # 3. load the new state dict
+    model.load_state_dict(model_dict) # this is the problematic line!!!!
+
+    print('after filtering keys')
+    summary(model,(3,224,224))
+
+
+
+    # Diff
     diff = [s for s in diff_states(model.state_dict(), pretrained_state)]
     print("Replacing the following state from initialized", name, ":", \
           [d[0] for d in diff])
-    
+
     for name, value in diff:
         pretrained_state[name] = value
-    
+
     assert len([s for s in diff_states(model.state_dict(), pretrained_state)]) == 0
-    
-    #Merge
-    model.load_state_dict(pretrained_state)
+
     return model, diff
 
 
@@ -161,8 +313,13 @@ def train(net, trainloader, param_list=None, epochs=15):
     #if finetuning model, turn off grad for other params
     if param_list:
         for p_fixed in (p for p in net.named_parameters() if not in_param_list(p[0])):
-            p_fixed[1].requires_grad = False            
-    
+            p_fixed[1].requires_grad = False
+
+        print('following parameters:')
+        for p_fixed in (p for p in net.named_parameters() if in_param_list(p[0])):
+            print(p_fixed[0])
+
+
     #Optimizer as in paper
     optimizer = optim.SGD((p[1] for p in params), lr=0.001, momentum=0.9)
 
@@ -174,7 +331,7 @@ def train(net, trainloader, param_list=None, epochs=15):
             # get the inputs
             inputs, labels = data
             if use_gpu:
-                inputs, labels = Variable(inputs.cuda()), Variable(labels.cuda(async=True))
+                inputs, labels = Variable(inputs.cuda()), Variable(labels.cuda(non_blocking=True))
             else:
                 inputs, labels = Variable(inputs), Variable(labels)
 
@@ -194,7 +351,7 @@ def train(net, trainloader, param_list=None, epochs=15):
             optimizer.step()
 
             # print statistics
-            running_loss += loss.data[0]
+            running_loss += loss.data.item()
             if i % 30 == 29:
                 avg_loss = running_loss / 30
                 losses.append(avg_loss)
@@ -237,7 +394,7 @@ def evaluate_stats(net, testloader):
         images, labels = data
 
         if use_gpu:
-            images, labels = (images.cuda()), (labels.cuda(async=True))
+            images, labels = (images.cuda()), (labels.cuda(non_blocking=True))
 
         outputs = net(Variable(images))
         _, predicted = torch.max(outputs.data, 1)
@@ -263,31 +420,32 @@ def train_eval(net, trainloader, testloader, param_list=None):
 
 stats = []
 num_classes = 39
-print("RETRAINING")
-
-for name in models_to_test:
-    print("")
-    print("Targeting %s with %d classes" % (name, num_classes))
-    print("------------------------------------------")
-    model_pretrained, diff = load_defined_model(name, num_classes)
-    final_params = [d[0] for d in diff]
-    #final_params = None
-    
-    resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
-    print("Resizing input images to max of", resize)
-    trainloader, testloader = load_data(resize)
-    
-    if use_gpu:
-        print("Transfering models to GPU(s)")
-        model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
-        
-    pretrained_stats = train_eval(model_pretrained, trainloader, testloader, final_params)
-    pretrained_stats['name'] = name
-    pretrained_stats['retrained'] = True
-    pretrained_stats['shallow_retrain'] = True
-    stats.append(pretrained_stats)
-    
-    print("")
+# print("RETRAINING ONLY CLASSIFIER")
+#
+# for name in models_to_test:
+#     print("")
+#     print("Targeting %s with %d classes" % (name, num_classes))
+#     print("------------------------------------------")
+#     model_pretrained, diff = load_defined_model(name, num_classes)
+#     final_params = [d[0] for d in diff]
+#
+#     #final_params = None
+#
+#     resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
+#     print("Resizing input images to max of", resize)
+#     trainloader, testloader = load_data(resize)
+#
+#     if use_gpu:
+#         print("Transfering models to GPU(s)")
+#         model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
+#
+#     pretrained_stats = train_eval(model_pretrained, trainloader, testloader, final_params)
+#     pretrained_stats['name'] = name
+#     pretrained_stats['retrained'] = True
+#     pretrained_stats['shallow_retrain'] = True
+#     stats.append(pretrained_stats)
+#
+#     print("")
 
 print("---------------------")
 print("TRAINING from scratch")
@@ -310,7 +468,7 @@ for name in models_to_test:
     blank_stats['retrained'] = False
     blank_stats['shallow_retrain'] = False
     stats.append(blank_stats)
-    
+
     print("")
 
 t = 0.0
@@ -319,7 +477,7 @@ for s in stats:
 print("Total time for training and evaluation", t)
 print("FINISHED")
 
-print("RETRAINING deep")
+print("RETRAINING deep (also first layers)")
 
 for name in models_to_test:
     print("")

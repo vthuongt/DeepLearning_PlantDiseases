@@ -99,3 +99,9 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+#training + validation data
+Scripts/PlantVillage
+
+# pycharm 
+Scripts/.idea
