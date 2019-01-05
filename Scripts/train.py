@@ -1,5 +1,6 @@
 import time
 import os, re
+import csv
 
 import ipdb
 
@@ -59,10 +60,9 @@ input_sizes = {
 #models_to_test = ['alexnet', 'densenet169', 'inception_v3', \
 #                  'resnet34', 'squeezenet1_1', 'vgg13']
 
-models_to_test = ['vgg13', 'densenet121','inception_v3', \
-                  'resnet34', 'squeezenet1_1', 'vgg13']
+models_to_test = ['alexnet', 'densenet121']
                   
-batch_size = 20
+batch_size = 40
 use_gpu = torch.cuda.is_available()
 
 #Generic pretrained model loading
@@ -159,100 +159,6 @@ def load_defined_model(name, num_classes):
     model.load_state_dict(pretrained_state)
     return model, diff
 
-
-# when loading:
-# clean up non pretrained model
-# and
-
-def load_defined_model2(name, num_classes):
-    print(torch.__version__)
-    print(torchvision.__version__)
-
-    model = models.__dict__[name](num_classes=num_classes)
-    print(name)
-    print(num_classes)
-
-    #Densenets don't (yet) pass on num_classes, hack it in for 169
-    # Densenets don't (yet) pass on num_classes, hack it in for 169
-    if name == 'densenet169':
-        model = models.DenseNet(num_init_features=64, growth_rate=32, \
-                                block_config=(6, 12, 32, 32),
-                                num_classes=num_classes)
-
-    elif name == 'densenet121':
-        model = models.DenseNet(num_init_features=64, growth_rate=32, \
-                                block_config=(6, 12, 24, 16),
-                                num_classes=num_classes)
-
-    elif name == 'densenet201':
-        model = models.DenseNet(num_init_features=64, growth_rate=32, \
-                                block_config=(6, 12, 48, 32),
-                                num_classes=num_classes)
-
-    elif name == 'densenet161':
-        model = models.DenseNet(num_init_features=96, growth_rate=48, \
-                                block_config=(6, 12, 36, 24),
-                                num_classes=num_classes)
-    elif name.startswith('densenet'):
-        raise ValueError(
-            "Cirumventing missing num_classes kwargs not implemented for %s" % name)
-    summary(model,(3,224,224))
-
-
-    pretrained_state = model_zoo.load_url(model_urls[name])
-    if name.startswith('densenet'):
-        pattern = re.compile(
-            r'^(.*denselayer\d+\.(?:norm|relu|conv))\.((?:[12])\.(?:weight|bias|running_mean|running_var))$')
-        for key in list(pretrained_state.keys()):
-            res = pattern.match(key)
-            if res:
-                new_key = res.group(1) + res.group(2)
-                pretrained_state[new_key] = pretrained_state[key]
-                del pretrained_state[key]
-
-    model_dict = model.state_dict()
-    pretrained_dict = pretrained_state
-
-
-    # 1. filter out unnecessary keys
-    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-
-    print(pretrained_state.keys())
-    # 2. overwrite entries in the existing state dict
-    model_dict.update(pretrained_dict)
-
-    # Diff
-    diff = [s for s in diff_states(model_dict, pretrained_state)]
-    print("Replacing the following state from initialized", name, ":", \
-          [d[0] for d in diff])
-
-    #for name, value in diff:
-    #    pretrained_state[name] = value
-
-    #assert len([s for s in diff_states(model.state_dict(), pretrained_state)]) == 0
-    #temp = [s for s in diff_states(model.state_dict(), pretrained_state)]
-
-
-    ipdb.set_trace()
-    # 3. load the new state dict
-    model.load_state_dict(model_dict) # this is the problematic line!!!!
-
-    print('after filtering keys')
-    summary(model,(3,224,224))
-
-
-
-    # Diff
-    diff = [s for s in diff_states(model.state_dict(), pretrained_state)]
-    print("Replacing the following state from initialized", name, ":", \
-          [d[0] for d in diff])
-
-    for name, value in diff:
-        pretrained_state[name] = value
-
-    assert len([s for s in diff_states(model.state_dict(), pretrained_state)]) == 0
-
-    return model, diff
 
 
 def filtered_params(net, param_list=None):
@@ -417,35 +323,45 @@ def train_eval(net, trainloader, testloader, param_list=None):
     stats_eval = evaluate_stats(net, testloader)
     
     return {**stats_train, **stats_eval}
+    
+def backup_stats(stat, train_mode):
+    fname = '%s_%s.csv' % (stat['name'], train_mode)
+    with open(fname, 'w') as csvfile:
+        fieldnames = stat.keys()
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        writer.writerow(stat)
 
 stats = []
 num_classes = 39
-# print("RETRAINING ONLY CLASSIFIER")
-#
-# for name in models_to_test:
-#     print("")
-#     print("Targeting %s with %d classes" % (name, num_classes))
-#     print("------------------------------------------")
-#     model_pretrained, diff = load_defined_model(name, num_classes)
-#     final_params = [d[0] for d in diff]
-#
-#     #final_params = None
-#
-#     resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
-#     print("Resizing input images to max of", resize)
-#     trainloader, testloader = load_data(resize)
-#
-#     if use_gpu:
-#         print("Transfering models to GPU(s)")
-#         model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
-#
-#     pretrained_stats = train_eval(model_pretrained, trainloader, testloader, final_params)
-#     pretrained_stats['name'] = name
-#     pretrained_stats['retrained'] = True
-#     pretrained_stats['shallow_retrain'] = True
-#     stats.append(pretrained_stats)
-#
-#     print("")
+print("RETRAINING ONLY CLASSIFIER")
+
+for name in models_to_test:
+    print("")
+    print("Targeting %s with %d classes" % (name, num_classes))
+    print("------------------------------------------")
+    model_pretrained, diff = load_defined_model(name, num_classes)
+    final_params = [d[0] for d in diff]
+
+    #final_params = None
+
+    resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
+    print("Resizing input images to max of", resize)
+    trainloader, testloader = load_data(resize)
+
+    if use_gpu:
+        print("Transfering models to GPU(s)")
+        model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
+
+    pretrained_stats = train_eval(model_pretrained, trainloader, testloader, final_params)
+    pretrained_stats['name'] = name
+    pretrained_stats['retrained'] = True
+    pretrained_stats['shallow_retrain'] = True
+    stats.append(pretrained_stats)
+
+    print("")
+    backup_stats(pretrained_stats, 'retrain_shallow')
 
 print("---------------------")
 print("TRAINING from scratch")
@@ -470,6 +386,7 @@ for name in models_to_test:
     stats.append(blank_stats)
 
     print("")
+    backup_stats(blank_stats, 'train')
 
 t = 0.0
 for s in stats:
@@ -500,10 +417,10 @@ for name in models_to_test:
     stats.append(pretrained_stats)
     
     print("")
+    backup_stats(pretrained_stats, 'retrain_deep')
 
 
 #Export stats as .csv
-import csv
 with open('stats.csv', 'w') as csvfile:
     fieldnames = stats[0].keys()
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
