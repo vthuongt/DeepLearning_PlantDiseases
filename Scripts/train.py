@@ -60,9 +60,9 @@ input_sizes = {
 #models_to_test = ['alexnet', 'densenet169', 'inception_v3', \
 #                  'resnet34', 'squeezenet1_1', 'vgg13']
 
-models_to_test = ['alexnet', 'densenet121']
+models_to_test = ['alexnet','densenet121']
                   
-batch_size = 40
+batch_size = 50
 use_gpu = torch.cuda.is_available()
 
 #Generic pretrained model loading
@@ -192,7 +192,7 @@ def load_data(resize):
         ]),
     }
 
-    data_dir = 'PlantVillage'
+    data_dir = 'PlantVillage_reduced'
     dsets = {x: datasets.ImageFolder(os.path.join(data_dir, x), data_transforms[x])
              for x in ['train', 'val']}
     dset_loaders = {x: torch.utils.data.DataLoader(dsets[x], batch_size=batch_size,
@@ -306,11 +306,13 @@ def evaluate_stats(net, testloader):
         _, predicted = torch.max(outputs.data, 1)
         total += labels.size(0)
         correct += (predicted == labels).sum()
-    accuracy = correct / total
+
+    accuracy = correct.to(dtype=torch.float) / total
     stats['accuracy'] = accuracy
     stats['eval_time'] = time.time() - before
     
     print('Accuracy on test images: %f' % accuracy)
+    #ipdb.set_trace()
     return stats
 
 

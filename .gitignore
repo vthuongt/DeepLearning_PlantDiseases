@@ -104,5 +104,8 @@ ENV/
 Scripts/PlantVillage
 Scripts/PlantVillage_reduced
 
+#training log
+Scripts/*.csv
+
 # pycharm 
 Scripts/.idea
