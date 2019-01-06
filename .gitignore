@@ -102,6 +102,7 @@ ENV/
 
 #training + validation data
 Scripts/PlantVillage
+Scripts/PlantVillage_reduced
 
 # pycharm 
 Scripts/.idea
