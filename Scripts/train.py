@@ -3,8 +3,12 @@ import os, re
 import csv
 
 import ipdb
+import pickle
 
 import numpy as np
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+
 import torch
 import torch.optim as optim
 from torch import nn
@@ -60,9 +64,17 @@ input_sizes = {
 #models_to_test = ['alexnet', 'densenet169', 'inception_v3', \
 #                  'resnet34', 'squeezenet1_1', 'vgg13']
 
-models_to_test = ['alexnet','densenet121']
+# models_to_test = ['alexnet','densenet169','inception_v3']
+models_to_test = ['vgg19', 'vgg16','vgg13', 'vgg11']
+
+
+retrain_shallow = True
+train = True
+retrain_deep=True
                   
-batch_size = 50
+batch_size = 30
+epochsToTrain = 15
+data_dir = 'PlantVillage'
 use_gpu = torch.cuda.is_available()
 
 #Generic pretrained model loading
@@ -192,7 +204,8 @@ def load_data(resize):
         ]),
     }
 
-    data_dir = 'PlantVillage_reduced'
+    global data_dir
+    global batch_size
     dsets = {x: datasets.ImageFolder(os.path.join(data_dir, x), data_transforms[x])
              for x in ['train', 'val']}
     dset_loaders = {x: torch.utils.data.DataLoader(dsets[x], batch_size=batch_size,
@@ -200,10 +213,10 @@ def load_data(resize):
                     for x in ['train', 'val']}
     dset_sizes = {x: len(dsets[x]) for x in ['train', 'val']}
     dset_classes = dsets['train'].classes
-    
-    return dset_loaders['train'], dset_loaders['val']
 
-def train(net, trainloader, param_list=None, epochs=15):
+    return dset_loaders['train'], dset_loaders['val'], dset_classes
+
+def train(net, trainloader, testloader=None, param_list=None, epochs=epochsToTrain, trainInfo=None):
     def in_param_list(s):
         for p in param_list:
             if s.endswith(p):
@@ -228,7 +241,9 @@ def train(net, trainloader, param_list=None, epochs=15):
 
     #Optimizer as in paper
     optimizer = optim.SGD((p[1] for p in params), lr=0.001, momentum=0.9)
-
+    
+    max_acc_stats = None
+    
     losses = []
     for epoch in range(epochs):
 
@@ -264,6 +279,16 @@ def train(net, trainloader, param_list=None, epochs=15):
                 print('[%d, %5d] loss: %.3f' %
                       (epoch + 1, i + 1, avg_loss))
                 running_loss = 0.0
+        
+         
+        stats_eval_intermediate = evaluate_stats(net, testloader)
+        if max_acc_stats and max_acc_stats['accuracy'] <= stats_eval_intermediate['accuracy']:
+            max_acc_stats = stats_eval_intermediate
+            path = '%s_%s_max_acc.pth' % (trainInfo['name'], trainInfo['mode'])
+            print('%s_%s_max_acc%.3f_epoch%d.pth' % (trainInfo['name'], trainInfo['mode'], stats_eval_intermediate['accuracy'], epoch))
+            torch.save(net.state_dict(), path)
+        elif not max_acc_stats:
+            max_acc_stats = stats_eval_intermediate
 
     print('Finished Training')
     return losses
@@ -272,7 +297,7 @@ def train(net, trainloader, param_list=None, epochs=15):
 #If param_list is None all relevant parameters are tuned,
 #otherwise, only parameters that have been constructed for custom
 #num_classes
-def train_stats(m, trainloader, param_list = None):
+def train_stats(m, trainloader, testloader=None, param_list = None, trainInfo=None):
     stats = {}
     params = filtered_params(m, param_list)    
     counts = 0,0
@@ -282,7 +307,7 @@ def train_stats(m, trainloader, param_list = None):
     stats['params_optimized'] = counts[1]
     
     before = time.time()
-    losses = train(m, trainloader, param_list=param_list)
+    losses = train(m, trainloader, testloader, param_list=param_list, trainInfo=trainInfo)
     stats['training_time'] = time.time() - before
 
     stats['training_loss'] = losses[-1] if len(losses) else float('nan')
@@ -294,32 +319,41 @@ def evaluate_stats(net, testloader):
     stats = {}
     correct = 0
     total = 0
-    
-    before = time.time()
-    for i, data in enumerate(testloader, 0):
-        images, labels = data
+    all_pred = []
+    all_labels = []
+    with torch.no_grad():    
+        before = time.time()
+        for i, data in enumerate(testloader, 0):
+            images, labels = data
 
-        if use_gpu:
-            images, labels = (images.cuda()), (labels.cuda(non_blocking=True))
+            if use_gpu:
+                images, labels = (images.cuda()), (labels.cuda(non_blocking=True))
 
-        outputs = net(Variable(images))
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum()
+            outputs = net(Variable(images))
+            _, predicted = torch.max(outputs.data, 1)
 
-    accuracy = correct.to(dtype=torch.float) / total
-    stats['accuracy'] = accuracy
-    stats['eval_time'] = time.time() - before
-    
+            # collect labels and predictions for confusion matrix
+            all_pred += predicted.cpu().numpy().tolist()
+            all_labels += labels.cpu().numpy().tolist()
+
+            total += labels.size(0)
+            correct += (predicted == labels).sum()
+            # print(i)
+
+        stats['confusion_matrix'] =  confusion_matrix(all_labels, all_pred)
+        accuracy = correct.to(dtype=torch.float) / total
+        stats['accuracy'] = accuracy
+        stats['eval_time'] = time.time() - before
+
     print('Accuracy on test images: %f' % accuracy)
     #ipdb.set_trace()
     return stats
 
 
-def train_eval(net, trainloader, testloader, param_list=None):
+def train_eval(net, trainloader, testloader, param_list=None, trainInfo=None):
     print("Training..." if not param_list else "Retraining...")
-    stats_train = train_stats(net, trainloader, param_list=param_list)
-    
+    stats_train = train_stats(net, trainloader, testloader, param_list=param_list, trainInfo=trainInfo)
+
     print("Evaluating...")
     net = net.eval()
     stats_eval = evaluate_stats(net, testloader)
@@ -328,99 +362,163 @@ def train_eval(net, trainloader, testloader, param_list=None):
     
 def backup_stats(stat, train_mode):
     fname = '%s_%s.csv' % (stat['name'], train_mode)
-    with open(fname, 'w') as csvfile:
-        fieldnames = stat.keys()
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    with open(fname, 'wb') as outfile:
+        pickle.dump(stat, outfile)
 
-        writer.writeheader()
-        writer.writerow(stat)
+
+
+def plot_confusion_matrix(cm, classes,
+                          normalize=False,
+                          title='Confusion matrix',
+                          cmap=plt.cm.Blues, printScores=False):
+    """
+    This function prints and plots the confusion matrix.
+    Normalization can be applied by setting `normalize=True`.
+    """
+    if normalize:
+        #TODO fix error by 0 division if not correctly classified
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        print("Normalized confusion matrix")
+    else:
+        print('Confusion matrix, without normalization')
+
+    print(cm)
+
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+
+    fmt = '.2f' if normalize else 'd'
+    thresh = cm.max() / 2.
+    if printScores:
+        for i, j in product(range(cm.shape[0]), range(cm.shape[1])):
+            plt.text(j, i, format(cm[i, j], fmt),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black",
+                     fontsize=5)
+
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.tight_layout()
+
+
 
 stats = []
 num_classes = 39
-print("RETRAINING ONLY CLASSIFIER")
 
-for name in models_to_test:
-    print("")
-    print("Targeting %s with %d classes" % (name, num_classes))
-    print("------------------------------------------")
-    model_pretrained, diff = load_defined_model(name, num_classes)
-    final_params = [d[0] for d in diff]
 
-    #final_params = None
+if retrain_shallow:
+    print("RETRAINING ONLY CLASSIFIER")
 
-    resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
-    print("Resizing input images to max of", resize)
-    trainloader, testloader = load_data(resize)
-
-    if use_gpu:
-        print("Transfering models to GPU(s)")
-        model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
-
-    pretrained_stats = train_eval(model_pretrained, trainloader, testloader, final_params)
-    pretrained_stats['name'] = name
-    pretrained_stats['retrained'] = True
-    pretrained_stats['shallow_retrain'] = True
-    stats.append(pretrained_stats)
-
-    print("")
-    backup_stats(pretrained_stats, 'retrain_shallow')
-
-print("---------------------")
-print("TRAINING from scratch")
-for name in models_to_test:
-    print("")    
-    print("Targeting %s with %d classes" % (name, num_classes))
-    print("------------------------------------------")
-    model_blank = models.__dict__[name](num_classes=num_classes)
-
-    resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
-    print("Resizing input images to max of", resize)
-    trainloader, testloader = load_data(resize)
-    
-    if use_gpu:
-        print("Transfering models to GPU(s)")
-        model_blank = torch.nn.DataParallel(model_blank).cuda()    
+    for name in models_to_test:
+        print("")
+        print("Targeting %s with %d classes" % (name, num_classes))
+        print("------------------------------------------")
+        model_pretrained, diff = load_defined_model(name, num_classes)
+        trainInfo = {'name':name, 'mode':'retraining_shallow'}
         
-    blank_stats = train_eval(model_blank, trainloader, testloader)
-    blank_stats['name'] = name
-    blank_stats['retrained'] = False
-    blank_stats['shallow_retrain'] = False
-    stats.append(blank_stats)
+        final_params = [d[0] for d in diff]
 
-    print("")
-    backup_stats(blank_stats, 'train')
+        #final_params = None
 
-t = 0.0
-for s in stats:
-    t += s['eval_time'] + s['training_time']
-print("Total time for training and evaluation", t)
-print("FINISHED")
+        resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
+        print("Resizing input images to max of", resize)
+        trainloader, testloader, dset_classes = load_data(resize)
 
-print("RETRAINING deep (also first layers)")
+        if use_gpu:
+            print("Transfering models to GPU(s)")
+            model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
 
-for name in models_to_test:
-    print("")
-    print("Targeting %s with %d classes" % (name, num_classes))
-    print("------------------------------------------")
-    model_pretrained, diff = load_defined_model(name, num_classes)
-    
-    resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
-    print("Resizing input images to max of", resize)
-    trainloader, testloader = load_data(resize)
-    
-    if use_gpu:
-        print("Transfering models to GPU(s)")
-        model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
+        pretrained_stats = train_eval(model_pretrained, trainloader, testloader, final_params, trainInfo)
+        pretrained_stats['name'] = name
+        pretrained_stats['retrained'] = True
+        pretrained_stats['shallow_retrain'] = True
+        stats.append(pretrained_stats)
+
+        print("")
+        backup_stats(pretrained_stats, 'retrain_shallow')
+
+        # Plot normalized confusion matrix
+        plt.figure()
+        plot_confusion_matrix(pretrained_stats['confusion_matrix'], classes=dset_classes, normalize=False,
+                              title='Normalized confusion matrix of %s retrained shallow' % name, printScores=True)
+        plt.draw()
+    print("---------------------")
+
+
+if train:
+    print("TRAINING from scratch")
+    for name in models_to_test:
+        print("")    
+        print("Targeting %s with %d classes" % (name, num_classes))
+        print("------------------------------------------")
+        model_blank = models.__dict__[name](num_classes=num_classes)
+        trainInfo = {'name':name, 'mode':'training'}
         
-    pretrained_stats = train_eval(model_pretrained, trainloader, testloader, None)
-    pretrained_stats['name'] = name
-    pretrained_stats['retrained'] = True
-    pretrained_stats['shallow_retrain'] = False
-    stats.append(pretrained_stats)
-    
-    print("")
-    backup_stats(pretrained_stats, 'retrain_deep')
+        resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
+        print("Resizing input images to max of", resize)
+        trainloader, testloader, dset_classes  = load_data(resize)
+        
+        if use_gpu:
+            print("Transfering models to GPU(s)")
+            model_blank = torch.nn.DataParallel(model_blank).cuda()    
+            
+        blank_stats = train_eval(model_blank, trainloader, testloader, None, trainInfo)
+        blank_stats['name'] = name
+        blank_stats['retrained'] = False
+        blank_stats['shallow_retrain'] = False
+        stats.append(blank_stats)
 
+        print("")
+        backup_stats(blank_stats, 'train')
+
+        # Plot normalized confusion matrix
+        plt.figure()
+        plot_confusion_matrix(blank_stats['confusion_matrix'], classes=dset_classes, normalize=False,
+                              title='Normalized confusion matrix of %s trained' % name, printScores=True)
+        plt.draw()
+
+    t = 0.0
+    for s in stats:
+        t += s['eval_time'] + s['training_time']
+    print("Total time for training and evaluation", t)
+    print("FINISHED")
+
+if retrain_deep:
+    print("RETRAINING deep (also first layers)")
+
+    for name in models_to_test:
+        print("")
+        print("Targeting %s with %d classes" % (name, num_classes))
+        print("------------------------------------------")
+        model_pretrained, diff = load_defined_model(name, num_classes)
+        trainInfo = {'name':name, 'mode':'retraining_deep'}
+        
+        resize = [s[1] for s in input_sizes.items() if s[0] in name][0]
+        print("Resizing input images to max of", resize)
+        trainloader, testloader, dset_classes  = load_data(resize)
+        
+        if use_gpu:
+            print("Transfering models to GPU(s)")
+            model_pretrained = torch.nn.DataParallel(model_pretrained).cuda()
+            
+        pretrained_stats = train_eval(model_pretrained, trainloader, testloader, None, trainInfo)
+        pretrained_stats['name'] = name
+        pretrained_stats['retrained'] = True
+        pretrained_stats['shallow_retrain'] = False
+        stats.append(pretrained_stats)
+        
+        print("")
+        backup_stats(pretrained_stats, 'retrain_deep')
+
+        # Plot normalized confusion matrix
+        plt.figure()
+        plot_confusion_matrix(pretrained_stats['confusion_matrix'], classes=dset_classes, normalize=False,
+                              title='Normalized confusion matrix of %s retrained deep' % name, printScores=True)
+        plt.draw()
 
 #Export stats as .csv
 with open('stats.csv', 'w') as csvfile:
@@ -430,3 +528,7 @@ with open('stats.csv', 'w') as csvfile:
     writer.writeheader()
     for s in stats:
         writer.writerow(s)
+
+
+plt.show()
+

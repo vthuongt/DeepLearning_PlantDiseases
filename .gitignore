@@ -101,11 +101,14 @@ ENV/
 .mypy_cache/
 
 #training + validation data
-Scripts/PlantVillage
-Scripts/PlantVillage_reduced
+Scripts/PlantVillage*
+Scripts/trainlog*
+Scripts/*.pth
 
 #training log
 Scripts/*.csv
 
+
 # pycharm 
 Scripts/.idea
+.idea/
