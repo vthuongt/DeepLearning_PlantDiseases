@@ -65,12 +65,12 @@ input_sizes = {
 #                  'resnet34', 'squeezenet1_1', 'vgg13']
 
 # models_to_test = ['alexnet','densenet169','inception_v3']
-models_to_test = ['vgg19', 'vgg16','vgg13', 'vgg11']
+models_to_test = ['densenet169']
 
 
-retrain_shallow = True
-train = True
-retrain_deep=True
+do_retrain_shallow = True
+do_train = True
+do_retrain_deep=True
                   
 batch_size = 30
 epochsToTrain = 15
@@ -281,7 +281,7 @@ def train(net, trainloader, testloader=None, param_list=None, epochs=epochsToTra
                 running_loss = 0.0
         
          
-        stats_eval_intermediate = evaluate_stats(net, testloader)
+        stats_eval_intermediate = evaluate_stats(net, testloader,intermediate=True)
         if max_acc_stats and max_acc_stats['accuracy'] <= stats_eval_intermediate['accuracy']:
             max_acc_stats = stats_eval_intermediate
             path = '%s_%s_max_acc.pth' % (trainInfo['name'], trainInfo['mode'])
@@ -315,7 +315,7 @@ def train_stats(m, trainloader, testloader=None, param_list = None, trainInfo=No
     
     return stats
 
-def evaluate_stats(net, testloader):
+def evaluate_stats(net, testloader,intermediate=False):
     stats = {}
     correct = 0
     total = 0
@@ -329,7 +329,12 @@ def evaluate_stats(net, testloader):
             if use_gpu:
                 images, labels = (images.cuda()), (labels.cuda(non_blocking=True))
 
-            outputs = net(Variable(images))
+            if intermediate and net.module.__class__.__name__ == 'Inception3':
+                outputs = net(Variable(images))
+                outputs = outputs [0] # rest is auxiliary classifier
+            else:
+                outputs = net(Variable(images))
+
             _, predicted = torch.max(outputs.data, 1)
 
             # collect labels and predictions for confusion matrix
@@ -361,7 +366,7 @@ def train_eval(net, trainloader, testloader, param_list=None, trainInfo=None):
     return {**stats_train, **stats_eval}
     
 def backup_stats(stat, train_mode):
-    fname = '%s_%s.csv' % (stat['name'], train_mode)
+    fname = '%s_%s.pkl' % (stat['name'], train_mode)
     with open(fname, 'wb') as outfile:
         pickle.dump(stat, outfile)
 
@@ -410,7 +415,7 @@ stats = []
 num_classes = 39
 
 
-if retrain_shallow:
+if do_retrain_shallow:
     print("RETRAINING ONLY CLASSIFIER")
 
     for name in models_to_test:
@@ -449,7 +454,7 @@ if retrain_shallow:
     print("---------------------")
 
 
-if train:
+if do_train:
     print("TRAINING from scratch")
     for name in models_to_test:
         print("")    
@@ -487,7 +492,7 @@ if train:
     print("Total time for training and evaluation", t)
     print("FINISHED")
 
-if retrain_deep:
+if do_retrain_deep:
     print("RETRAINING deep (also first layers)")
 
     for name in models_to_test:
@@ -521,7 +526,7 @@ if retrain_deep:
         plt.draw()
 
 #Export stats as .csv
-with open('stats.csv', 'w') as csvfile:
+with open('stats_%s.csv' % ''.join(models_to_test), 'w') as csvfile:
     fieldnames = stats[0].keys()
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
