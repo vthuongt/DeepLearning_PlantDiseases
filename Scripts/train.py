@@ -65,16 +65,19 @@ input_sizes = {
 #                  'resnet34', 'squeezenet1_1', 'vgg13']
 
 # models_to_test = ['alexnet','densenet169','inception_v3']
-models_to_test = ['densenet169']
+models_to_test = ['vgg13', 'alexnet', 'inception_v3', 'densenet169', 'resnet152']
+# models_to_test = ['resnet152']
 
 
 do_retrain_shallow = True
-do_train = True
-do_retrain_deep=True
+do_train = False
+do_retrain_deep=False
                   
-batch_size = 30
-epochsToTrain = 15
-data_dir = 'PlantVillage'
+batch_size = 60
+epochsToTrain = 20
+# data_dir = 'PlantVillage'
+# data_dir = r'/tmp/linie1/'
+data_dir = r'/tmp/tinyimg/'
 use_gpu = torch.cuda.is_available()
 
 #Generic pretrained model loading
@@ -186,7 +189,7 @@ def filtered_params(net, param_list=None):
 
 #Training and Evaluation
 
-def load_data(resize):
+def load_data(resize, num_workers=4):
 
     data_transforms = {
         'train': transforms.Compose([
@@ -209,7 +212,7 @@ def load_data(resize):
     dsets = {x: datasets.ImageFolder(os.path.join(data_dir, x), data_transforms[x])
              for x in ['train', 'val']}
     dset_loaders = {x: torch.utils.data.DataLoader(dsets[x], batch_size=batch_size,
-                                                   shuffle=True)
+                                                   shuffle=True, num_workers=num_workers)
                     for x in ['train', 'val']}
     dset_sizes = {x: len(dsets[x]) for x in ['train', 'val']}
     dset_classes = dsets['train'].classes
@@ -412,7 +415,9 @@ def plot_confusion_matrix(cm, classes,
 
 
 stats = []
-num_classes = 39
+# num_classes = 39
+# num_classes = 2
+num_classes = len(os.listdir(os.path.join(data_dir,'train')))
 
 
 if do_retrain_shallow:

@@ -104,11 +104,17 @@ ENV/
 Scripts/PlantVillage*
 Scripts/trainlog*
 Scripts/*.pth
+Scripts/*backup
 
 #training log
 Scripts/*.csv
+Scripts/*.pkl
 
 
 # pycharm 
 Scripts/.idea
 .idea/
+
+#visualization picture
+*.png
+

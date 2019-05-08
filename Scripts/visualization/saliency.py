@@ -20,16 +20,18 @@ import os
 from os import listdir
 from os.path import isfile, join
 from torchvision import datasets
+import ipdb
 
 
 parser = argparse.ArgumentParser(description='PlantVillage Sailency Map Visualization')
-parser.add_argument('model_path', metavar='N', help='path to trained model')
-parser.add_argument('data_dir', metavar='DIR', help='path to output dir')
-parser.add_argument('image_path',metavar='N', help='path to the image')
-parser.add_argument('image_class',metavar='N', help='disease name')
-parser.add_argument('--output_dir', metavar='DIR', help='path to output dir', default="output/")
-parser.add_argument('--classes', default=10, type=int, metavar='N', help='number of classes')
-parser.add_argument('--arch',metavar='N',  default="vgg13", help='architecture name, default: vgg13')
+parser.add_argument('model_path', help='path to trained model')
+parser.add_argument('data_dir', help='path to data dir containing train/ and val/')
+parser.add_argument('image_path', help='path to the image')
+parser.add_argument('image_class', help='disease name')
+parser.add_argument('--output_dir', help='path to output dir', default="output/")
+parser.add_argument('--classes', default=10, type=int, metavar='N', help='number of classes, is deducted from data_dir/train')
+parser.add_argument('--arch',  default="vgg13", help='architecture name, default: vgg13')
+parser.add_argument('--saliency_method',default="guided", help='method for computing gradients in saliency map', choices=['guided', 'naive', 'deconv'])
 
 args = parser.parse_args()
 
@@ -52,8 +54,9 @@ def load_defined_model(path, num_classes,name):
     model = models.__dict__[name](num_classes=num_classes)
     pretrained_state = torch.load(path)
     new_pretrained_state= OrderedDict()
-   
-    for k, v in pretrained_state['state_dict'].items():
+    
+    # for k, v in pretrained_state['state_dict'].items():
+    for k, v in pretrained_state.items():
         layer_name = k.replace("module.", "")
         new_pretrained_state[layer_name] = v
         
@@ -69,13 +72,8 @@ def load_defined_model(path, num_classes,name):
     return model
 
 
-#Load the model
-model= load_defined_model(args.model_path,args.classes,args.arch)
-use_gpu = torch.cuda.is_available()
-
-
 normalize = transforms.Normalize(
-   mean=[0.485, 0.456, 0.406],
+   mean=[0.485, 0.456, 0.406],  # where to the numbers come from?
    std=[0.229, 0.224, 0.225]
 )
 preprocess = transforms.Compose([
@@ -85,7 +83,7 @@ preprocess = transforms.Compose([
    normalize
 ])
 
-
+# same as preprocess but without normalize
 preprocess1 = transforms.Compose([
    transforms.Scale(256),
    transforms.CenterCrop(224),
@@ -108,17 +106,21 @@ def load_labels(data_dir,resize=(224,224)):
              for x in ['train']}  
     return (dsets['train'].classes)
 
+
 labels=load_labels(args.data_dir)
 print("Classes of plant diseases classification :")
 print ("-------------------------------")
 for label in labels:
     print (label)
 print ("-------------------------------")
+args.classes = len(labels)
 
+#Load the model
+model= load_defined_model(args.model_path,args.classes,args.arch)
+use_gpu = torch.cuda.is_available()
 
 from torchvis import util
 vis_param_dict, reset_state, remove_handles = util.augment_module(model)
-
 
 
 def Saliency_map(image,model,preprocess,ground_truth,use_gpu=False,method=util.GradType.GUIDED):
@@ -159,15 +161,19 @@ def classifyOneImage(model,img_pil,preprocess):
     out = model(img_variable)
     m = nn.Softmax()
     if use_gpu:     
-        return m(out).cpu()
-    return(out)
+        return m(out).cpu()[0].tolist()
+    return m(out)[0].tolist()
 
     
 
-
-#method == util.GradType.NAIVE or util.GradType.GUIDED
-method=util.GradType.GUIDED
-
+if args.saliency_method == 'guided':
+    method=util.GradType.GUIDED
+elif args.saliency_method == 'naive':
+    method=util.GradType.NAIVE
+elif args.saliency_method == 'deconv':
+    method=util.GradType.DECONV
+else:
+    raise ValueError('Invalid value for args.saliency_method = %s' % args.saliency_methdo)
 
 
 if not os.path.exists(args.output_dir):
@@ -188,20 +194,24 @@ model.eval()
 
 #Extract image name without extension
 file_name=os.path.basename(args.image_path)
-file_name=os.path.splitext(args.image_path)[0]
-
-
+file_name=os.path.splitext(file_name)[0]
 
 
 
 if not os.path.exists(args.output_dir):
     os.makedirs(args.output_dir)
 
+pred = classifyOneImage(model, img, preprocess)
+pred_class = labels[pred.index(max(pred))]
+probabilities_str = ''
+for idx, label in enumerate(labels):
+    probabilities_str += '%s: %.3f - ' % (label, pred[idx])
 # ----------------------------------->
 cropped_img = preprocess1(img)
 npimg = cropped_img.numpy()
 plt.imshow(np.transpose(npimg, (1, 2, 0)))
 plt.savefig(args.output_dir+file_name+"(cropped).png")
+plt.title('true label: %s, predicted %s\n %s' %(args.image_class, pred_class, probabilities_str))
 plt.show()
 img.save(args.output_dir+file_name+"(original).png")
 #------------------------------------>
@@ -211,6 +221,7 @@ map=Saliency_map(img,model,preprocess,ind,use_gpu,method)
 
 plot_name=args.output_dir+str(file_name)+"("+method.name+").png"
 plt.imshow(map,cmap='hot', interpolation='nearest')
+plt.title('method: %s' % (method.name,))
 plt.savefig(plot_name)
 plt.show()       
           
