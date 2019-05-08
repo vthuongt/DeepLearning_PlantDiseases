@@ -28,10 +28,10 @@ parser.add_argument('model_path', help='path to trained model')
 parser.add_argument('data_dir', help='path to data dir containing train/ and val/')
 parser.add_argument('image_path', help='path to the image')
 parser.add_argument('image_class', help='disease name')
-parser.add_argument('--output_dir', help='path to output dir', default="output/")
+parser.add_argument('--output_dir', help='path to output dir', default="output_saliency/")
 parser.add_argument('--classes', default=10, type=int, metavar='N', help='number of classes, is deducted from data_dir/train')
 parser.add_argument('--arch',  default="vgg13", help='architecture name, default: vgg13')
-parser.add_argument('--saliency_method',default="guided", help='method for computing gradients in saliency map', choices=['guided', 'naive', 'deconv'])
+parser.add_argument('--method',default="guided", help='method for computing gradients in saliency map', choices=['guided', 'naive', 'deconv'])
 
 args = parser.parse_args()
 
@@ -113,7 +113,11 @@ print ("-------------------------------")
 for label in labels:
     print (label)
 print ("-------------------------------")
-args.classes = len(labels)
+if args.classes != len(labels):
+    print('WARNING: number of classes are not matching. Take the number deduced from input folder %s: %d' %(args.data_dir,len(labels)))
+    args.classes = len(labels)
+
+
 
 #Load the model
 model= load_defined_model(args.model_path,args.classes,args.arch)
@@ -166,14 +170,14 @@ def classifyOneImage(model,img_pil,preprocess):
 
     
 
-if args.saliency_method == 'guided':
+if args.method == 'guided':
     method=util.GradType.GUIDED
-elif args.saliency_method == 'naive':
+elif args.method == 'naive':
     method=util.GradType.NAIVE
-elif args.saliency_method == 'deconv':
+elif args.method == 'deconv':
     method=util.GradType.DECONV
 else:
-    raise ValueError('Invalid value for args.saliency_method = %s' % args.saliency_methdo)
+    raise ValueError('Invalid value for args.method = %s' % args.method)
 
 
 if not os.path.exists(args.output_dir):

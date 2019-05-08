@@ -14,8 +14,8 @@ class GradType(Enum):
     # here, comments follow those in
     # <https://github.com/Lasagne/Recipes/blob/master/examples/Saliency%20Maps%20and%20Guided%20Backpropagation.ipynb>
     NAIVE  = 0    # Simonyan et al. (2013): Plain Gradient
-    GUIDED = 1
-    DECONV = 2
+    GUIDED = 1    # only positiy positive gradients used in backprop
+    DECONV = 2    # negative gradients are clipped (more general than guided)
 
 
 def augment_module(net: nn.Module):

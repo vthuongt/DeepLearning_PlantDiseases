@@ -20,21 +20,22 @@ import os
 from os import listdir
 from os.path import isfile, join
 from torchvision import datasets
+import ipdb
 
 
 
 model_names = sorted(name for name in models.__dict__ if name.islower() and not name.startswith("__"))
 
 parser = argparse.ArgumentParser(description='Plant Disease Occlusion Experiment')
-parser.add_argument('data_dir', metavar='DIR', help='path to dataset')
-parser.add_argument('output_dir', metavar='DIR', help='path to output dir', default="/")
-parser.add_argument('--arch',metavar='N',  default="alexnet", help='architecture name, default: alexnet')
-parser.add_argument('model_path',metavar='N',help='path to the trained model')
-parser.add_argument('image_path',metavar='N', help='path to the image')
-parser.add_argument('disease',metavar='N', help='disease name')
-parser.add_argument('--classes', default=10, type=int, metavar='N', help='number of classes')
-parser.add_argument('--size', default=10, type=int, metavar='N', help='size')
-parser.add_argument('--stride', default=100, type=int, metavar='N', help='stride')
+parser.add_argument('model_path', help='path to the trained model')
+parser.add_argument('data_dir', help='path to dataset')
+parser.add_argument('image_path', help='path to the image')
+parser.add_argument('image_class', help='disease name')
+parser.add_argument('--output_dir', help='path to output dir', default="output/")
+parser.add_argument('--arch', default="alexnet", help='architecture name, default: alexnet')
+parser.add_argument('--classes', default=10, type=int, help='number of classes')
+parser.add_argument('--size', default=10, type=int, help='size of occlusion patch')
+parser.add_argument('--stride', default=100, type=int, help='stride of occlusions to apply')
 
 args = parser.parse_args()
 
@@ -58,7 +59,7 @@ def load_defined_model(path, num_classes,name):
     pretrained_state = torch.load(path)
     new_pretrained_state= OrderedDict()
    
-    for k, v in pretrained_state['state_dict'].items():
+    for k, v in pretrained_state.items():
         layer_name = k.replace("module.", "")
         new_pretrained_state[layer_name] = v
         
@@ -66,20 +67,12 @@ def load_defined_model(path, num_classes,name):
     diff = [s for s in diff_states(model.state_dict(), new_pretrained_state)]
     if(len(diff)!=0):
         print("Mismatch in these layers :", name, ":", [d[0] for d in diff])
-   
+    
     assert len(diff) == 0
     
     #Merge
     model.load_state_dict(new_pretrained_state)
     return model
-
-
-#Load the model
-model= load_defined_model(args.model_path,args.classes,args.arch)
-use_gpu = torch.cuda.is_available()
-
-
-
 
 
 normalize = transforms.Normalize(
@@ -113,6 +106,14 @@ print ("-------------------------------")
 for label in labels:
     print (label)
 print ("-------------------------------")
+if args.classes != len(labels):
+    print('WARNING: number of classes are not matching. Take the number deduced from input folder %s: %d' %(args.data_dir,len(labels)))
+    args.classes = len(labels)
+
+
+#Load the model
+model= load_defined_model(args.model_path,args.classes,args.arch)
+use_gpu = torch.cuda.is_available()
 
 
 
@@ -136,8 +137,8 @@ def Occlusion_exp(image,occluding_size,occluding_stride,model,preprocess,classes
             
     L = np.empty(output_height*output_width)
     L.fill(groundTruth)
-    L = torch.from_numpy(L)
-    tensor_images = torch.stack([img for img in ocludedImages])
+    L = torch.from_numpy(L) # groundtrutch label vector for all occluded images
+    tensor_images = torch.stack([img for img in ocludedImages]) # tensor of occluded images
     dataset = torch.utils.data.TensorDataset(tensor_images,L) 
     dataloader = torch.utils.data.DataLoader(dataset,batch_size=5,shuffle=False, num_workers=8) 
 
@@ -147,14 +148,17 @@ def Occlusion_exp(image,occluding_size,occluding_stride,model,preprocess,classes
         images, labels = data
         
         if use_gpu:
-            images, labels = (images.cuda()), (labels.cuda(async=True))
+            images, labels = (images.cuda()), (labels.cuda(non_blocking=True))
         
         outputs = model(Variable(images))
-        m = nn.Softmax()
+        m = nn.Softmax(dim=1)
         outputs=m(outputs)
         if use_gpu:   
             outs=outputs.cpu()
-        heatmap = np.concatenate((heatmap,outs[0:outs.size()[0],groundTruth].data.numpy()))
+        
+        # ipdb.set_trace()
+        # heatmap = np.concatenate((heatmap,outs[0:outs.size()[0],groundTruth].data.numpy()))
+        heatmap = np.concatenate((heatmap,outs[:,groundTruth].data.numpy()))
         
     return heatmap.reshape((output_height, output_width))    
     
@@ -170,8 +174,8 @@ def classifyOneImage(model,img_pil,preprocess):
     out = model(img_variable)
     m = nn.Softmax()
     if use_gpu:     
-        return m(out).cpu()
-    return(out)
+        return m(out).cpu()[0].tolist()
+    return m(out)[0].tolist()
 
 
 
@@ -184,7 +188,7 @@ plt.imshow(img)
 plt.show() 
 
 
-ind=labels.index(args.disease)
+ind=labels.index(args.image_class)
 heatmap=Occlusion_exp(img,args.size,args.stride,model,preprocess,labels,ind)
 plot_name=args.output_dir+" Heatmap ("+str(args.size)+" "+str(args.stride)+").png"
 ax = sns.heatmap(heatmap,cmap="YlGnBu",xticklabels=False, yticklabels=False)
